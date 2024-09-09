@@ -77,7 +77,7 @@ def get_args_parser():
     parser.add_argument("--warmup_epochs", type=int, default=40, metavar="N", help="epochs to warmup LR")
 
     # Dataset parameters
-    parser.add_argument("--data_path", default='/home/cdranami/Desktop/medicaldata/images', type=str, help="dataset path")
+    parser.add_argument("--data_path", default='C:/Users/syunt/medicaldata/image/OCT', type=str, help="dataset path")
     parser.add_argument("--output_dir", default="./model", help="path where to save, empty for no saving")
     parser.add_argument("--log_dir", default="./model", help="path where to tensorboard log")
     parser.add_argument("--device", default="cuda:0", help="device to use for training / testing")
@@ -120,7 +120,6 @@ def main(args):
     # simple augmentation
     transform_train = transforms.Compose(
         [
-            transforms.Resize(224),
             transforms.RandomResizedCrop(
                 224, scale=(0.2, 1.0), interpolation=transforms.InterpolationMode.BICUBIC
             ),  # 3 is bicubic
@@ -129,7 +128,7 @@ def main(args):
             transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2470, 0.2435, 0.2616]),
         ]
     )
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, "CASIA2_Add"), transform=transform_train)
+    dataset_train = datasets.ImageFolder(args.data_path + "/train_add", transform=transform_train)
     print(dataset_train)
 
     if True:  # args.distributed:

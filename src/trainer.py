@@ -14,7 +14,7 @@ import torch.optim as optim
 import models_mae
 from torch.utils.data.dataset import Subset
 from torch.utils.data import DataLoader 
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import KFold
 from utils  import *
 from network import *
 from Dataset import *
@@ -25,6 +25,7 @@ from datetime import datetime
 from tqdm import tqdm
 from timm.models.layers import trunc_normal_
 from util.pos_embed import interpolate_pos_embed
+from lion_pytorch import Lion
 
 #TypeToIntdict
 TypeToIntdict = {'age':3,'gender':4,'N':5,'C':7,'P':8}
@@ -77,14 +78,21 @@ def plot_Loss(dir_path,lossList,lr,preprocess):
 
 def calc_class_count(dataset,n_class):
     #データセットからラベルの値を一つずつ取り出して、クラス数を計算する
-    class_count = [0] * n_class
+    class_count = [0] * n_class 
+    l = len(dataset)
 
-    for i in range(len(dataset)):
-        label = int([np.argmax(dataset[i][1].detach().cpu().numpy())][0])
+    start_time = time.time()
+    for i in range(l):
+        print(dataset.pick_label(i))
+        if all(torch.argmax(dataset.pick_label(i)) == torch.Tensor([1])):
+            label = 1
+        else :
+            label = 0
         class_count[label] += 1
 
-    #labelsを元に各クラスの数を計算する
+    end_time = time.time()
     print(class_count)
+
     return class_count
 
 
@@ -97,7 +105,8 @@ def calc_class_inverse_weight(dataset,n_class):
     return torch.Tensor(class_weight)
 
 def calc_class_weight(dataset,n_class,beta):
-    class_count = calc_class_count(dataset,n_class) #これをデータセットから計算する関数が必要
+    # class_count = calc_class_count(dataset,n_class) #これをデータセットから計算する関数が必要
+    class_count = []
     if beta == -1:
         return calc_class_inverse_weight(dataset,n_class)
     elif beta == 0:
@@ -118,7 +127,7 @@ class Trainer():
         self.n_seeds = len(c['seed'])
         self.n_splits = 5
         self.loss = {}
-        self.now = '{:%y%m%d-%H:%M}'.format(datetime.now())
+        self.now = '{:%y%m%d%H%M}'.format(datetime.now())
         self.log_path = os.path.join(config.LOG_DIR_PATH,
                                 str(self.now))
         os.makedirs(self.log_path, exist_ok=True)
@@ -139,29 +148,25 @@ class Trainer():
             torch.manual_seed(c['seed'])
             print('Parameter :',c)
             self.c = c
-            self.c['n_per_unit'] = 1 if self.c['d_mode'] == 'horizontal' else 16
-            self.c['type'] = TypeToIntdict[self.c['type']]
 
             #訓練、検証に分けてデータ分割
-            if os.path.exists(config.normal_pkl):
-                with open(config.normal_pkl,mode="rb") as f:
-                    self.dataset = pickle.load(f)
-            else :
-                self.dataset = load_dataset(self.c['n_per_unit'],self.c['type'],self.c['preprocess'])
-                with open(config.normal_pkl,mode="wb") as f:
-                    pickle.dump(self.dataset,f)
+            #if os.path.exists(config.normal_pkl):
+            #    with open(config.normal_pkl,mode="rb") as f:
+            #        self.dataset = pickle.load(f)
+            #else :
+            self.dataset = load_testdataset()
+            #self.dataset = load_dataset()
+                #with open(config.normal_pkl,mode="wb") as f:
+                #    pickle.dump(self.dataset,f)
 
-
-            #使用モデルがViTの場合に改造する。
-            #self.net = make_model(self.c['model_name'],self.c['n_per_unit'])
-            #self.net = nn.DataParallel(self.net)
-            #self.optimizer = optim.SGD(params=self.net.parameters(),lr=self.c['lr'],momentum=0.9)
+            kf = KFold(n_splits=self.n_splits,shuffle=True,random_state=0)
+            if not self.c['evaluate']:
+                self.dataset_train_id = kf.split(self.dataset['train'])
             
-            #訓練、検証に分けてデータ分割
-            #self.dataset = load_dataset(self.c['n_per_unit'],self.c['type'],self.c['preprocess'])
-            kf = StratifiedKFold(n_splits=self.n_splits,shuffle=True,random_state=0)
-            train_id_index,y = calc_kfold_criterion('train')
-            id_index = kf.split(train_id_index,y) if not self.c['evaluate'] else [(train_id_index,[])]
+            else:
+                self.dataset_train_id = (list(range(len(self.dataset['train']))),[])
+
+            print(self.dataset_train_id)
 
             lossList = {}
             for phase in ['learning','valid']:
@@ -170,62 +175,65 @@ class Trainer():
                 else:
                     lossList[phase] = [[] for x in range(self.n_splits)]
 
-            model_mae = prepare_model(config.mae_path,'mae_vit_base_patch16')
+            #model_mae = prepare_model(config.mae_path,'mae_vit_base_patch16')
 
 
-            #learning_id_index , valid_id_index = kf.split(train_id_index,y).__next__() 1つだけ取り出したいとき
-            for a,(learning_id_index,valid_id_index) in enumerate(id_index):
+            for a,(learning_id,valid_id) in enumerate(self.dataset_train_id):
                 #self.net.apply(init_weights)
-                self.net = make_model(self.c['model_name'],self.c['n_per_unit'])#.to(device)
-                state_dict = self.net.state_dict()
-                print(state_dict)
+                self.net = make_model(self.c['model_name'],1)#.to(device)
 
-                temp_mae = torch.load(config.mae_path,map_location='cpu')
-                model_mae = temp_mae['model']
-                #state_dict = model_mae.state_dict()
-                #print(state_dict)
+                if self.c['model_name'] == 'MAE_ViT':
+                    state_dict = self.net.state_dict()
 
-                for k in ['head.weight','head.bias']:
-                    if k in temp_mae and temp_mae[k].shape != state_dict[k].shape:
-                        del model_mae[k]
-                interpolate_pos_embed(self.net,model_mae)
+                    temp_mae = torch.load(config.mae_path,map_location='cpu')
+                    model_mae = temp_mae['model']
+                    #state_dict = model_mae.state_dict()
+                    #print(state_dict)
 
-                msg = self.net.load_state_dict(model_mae,strict=False)
-                #print(msg)
+                    for k in ['head.weight','head.bias']:
+                        if k in temp_mae and temp_mae[k].shape != state_dict[k].shape:
+                            del model_mae[k]
+                    interpolate_pos_embed(self.net,model_mae)
 
-                trunc_normal_(self.net.head.weight,std=2e-5)
+                    msg = self.net.load_state_dict(model_mae,strict=False)
+                    #print(msg)
+
+                    trunc_normal_(self.net.head.weight,std=2e-5)
                 self.net.to(device)
 
-                #self.net = nn.DataParallel(self.net).to(device)
+                self.net = nn.DataParallel(self.net).to(device)
                 self.optimizer = optim.SGD(params=self.net.parameters(),lr=self.c['lr'],momentum=0.9)
+
                 #self.optimizer = optim.SGD(params=self.net.parameters(),lr=self.c['lr'],momentum=0.9)
 
                 #画像に対応したIDに変換 -> Dataloaderで読み込む。
-                learning_index,valid_index = calc_dataset_index(learning_id_index,valid_id_index,'train',self.c['n_per_unit'])
-                learning_dataset = Subset(self.dataset['train'],learning_index)
+                if self.c['evaluate']:
+                    learning_dataset = self.dataset['train']
+                else:
+                    learning_dataset = Subset_label(self.dataset['train'],learning_id)
+                    
 
                 #訓練データの各クラス数をカウントしないといけないのでは？
                 
                 #self.class_weight = calc_class_inverse_weight(learning_dataset)
                 self.class_weight = calc_class_weight(learning_dataset,config.n_class,beta=self.c['beta'])
-                calc_class_count(learning_dataset,config.n_class)
-                #self.criterion = nn.BCELoss(weight=self.class_weight.to(device))
-                self.criterion = Focal_MultiLabel_Loss(gamma=self.c['gamma'],weights=self.class_weight.to(device))
+                #self.criterion = nn.BCELoss(weight=self.class_weight.to(devi ce))
+                self.criterion = Focal_MultiLabel_Loss(gamma=self.c['gamma'],weights=self.class_weight).to(device)
 
 
                 #Dataloaderの種類を指定
                 if self.c['sampler'] == 'normal':
-                    self.dataloaders['learning'] = DataLoader(learning_dataset,self.c['bs'],num_workers=os.cpu_count(),shuffle=True)
+                    self.dataloaders['learning'] = DataLoader(learning_dataset,self.c['bs'],num_workers=os.cpu_count()//4,shuffle=True,persistent_workers=True)
                 elif self.c['sampler'] == 'over':
                     self.dataloaders['learning'] = BinaryOverSampler(learning_dataset,self.c['bs']//config.n_class)
                 elif self.c['sampler'] == 'under':
                     self.dataloaders['learning'] = BinaryUnderSampler(learning_dataset,self.c['bs']//config.n_class)
 
                 if not self.c['evaluate']:
-                    valid_dataset = Subset(self.dataset['train'],valid_index)
+                    valid_dataset = Subset_label(self.dataset['train'],valid_id)
                     #検証データに対するSamplerは普通のを採用すればいいから実装する必要がない
                     self.dataloaders['valid'] = DataLoader(valid_dataset,self.c['bs'],
-                    shuffle=True,num_workers=os.cpu_count())
+                    shuffle=True,num_workers=os.cpu_count()//4,persistent_workers=True)
 
                 #self.earlystopping = EarlyStopping(patience=10,verbose=False,delta=0)
 
@@ -235,7 +243,7 @@ class Trainer():
                     #平均計算用にauc.lossを保存。
                     lossList['learning'][a].append(learningloss)
 
-                    if not self.c['evaluate']:
+                    if not self.c['evaluate']: 
                         valid_pr_auc,validloss,validprecision,validrecall \
                             = self.execute_epoch(epoch, 'valid')
 
@@ -307,8 +315,8 @@ class Trainer():
                 writer.writerow([self.now,n_ex,model_name,n_ep])
             save_path = '{:0=2}'.format(n_ex)+ '_' + model_name + '_' + '{:0=3}'.format(n_ep)+'ep.pth'
             model_save_path = os.path.join(config.MODEL_DIR_PATH,save_path)
-            #torch.save(self.net.module.state_dict(),model_save_path)
-            torch.save(self.net.state_dict(),model_save_path)
+            torch.save(self.net.module.state_dict(),model_save_path)
+            #torch.save(self.net.state_dict(),model_save_path)
 
 
         except FileNotFoundError:
@@ -340,13 +348,6 @@ class Trainer():
 
             self.optimizer.zero_grad()
             with torch.set_grad_enabled(phase == 'learning'):
-                
-                #使用モデルがViTの場合
-#                if self.c['model_name']=='DeiT':
-#                    model_name = 'facebook/deit-base-distilled-patch16-224'
-#                    feature_extractor = DeiTFeatureExtractor.from_pretrained(model_name)
- #                   inputs_ = feature_extractor(images=inputs_,return_tensor='pt')
-
 
                 outputs_ = self.net(inputs_).to(device)
 
@@ -371,7 +372,8 @@ class Trainer():
         pr_auc = macro_pr_auc(labels,preds,config.n_class)
 
         try:
-            roc_auc = roc_auc_score(labels, preds[:,1])
+            #roc_auc = roc_auc_score(labels, preds[:,1])
+            roc_auc = roc_auc_score(labels,preds,multi_class='ovr',average='macro')
         except:
             roc_auc = 0
 
@@ -407,7 +409,7 @@ class Trainer():
             f'epoch: {epoch} phase: {phase} loss: {total_loss:.3f} roc-auc: {roc_auc:.3f} pr-auc: {pr_auc:.3f} f1:{f1:.3f} TN:{TN} FN:{FN} FP:{FP} TP:{TP}')
 
         #ここにpr_auc,f1,tn,fn,tp,fpを追加
-        result_list = [self.c['model_name'],self.c['lr'],self.c['seed'],self.c['preprocess'],self.c['sampler'],self.c['beta'],self.c['gamma'],phase,epoch,total_loss,roc_auc,pr_auc,f1,TN,FN,FP,TP]
+        result_list = [self.c['model_name'],self.c['lr'],self.c['seed'],'None',self.c['sampler'],self.c['beta'],self.c['gamma'],phase,epoch,total_loss,roc_auc,pr_auc,f1,TN,FN,FP,TP]
 
         write_Scores(self.log_path,result_list)
         

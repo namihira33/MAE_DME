@@ -11,6 +11,7 @@
 
 from functools import partial
 
+import config
 import torch
 import torch.nn as nn
 import timm.models.vision_transformer

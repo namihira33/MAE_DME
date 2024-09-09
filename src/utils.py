@@ -469,15 +469,15 @@ def make_ROC(labels,preds,save_fig_path):
 
 def make_ConfusionMatrix(cm,save_fig_path):
         fig,ax = plt.subplots(figsize=(6,6))
-        sns.set(font="IPAexGothic",font_scale=1.8)  
+        sns.set(font="IPAexGothic",font_scale=5)  
         sns.heatmap(cm,square=True,cbar=True,annot=True,cmap='Blues',fmt='d')
-        ax.set_ylabel('正解値',fontsize=18)
+        ax.set_ylabel('正解値',fontsize=24)
         #ax.set_xticklabels(['1','2,3','4≦'],fontsize=20)
         #ax.set_yticklabels(['1','2,3','4≦'],fontsize=20)
-        ax.set_xticklabels(['0','1'],fontsize=20)
-        ax.set_yticklabels(['0','1'],fontsize=20)
-        ax.set_xlabel('予測値',fontsize=18)
-        ax.set_title('Confusion Matrix',fontsize=20)
+        ax.set_xticklabels(['N1','≧N2'],fontsize=45)
+        ax.set_yticklabels(['N1','≧N2'],fontsize=45)
+        ax.set_xlabel('予測値',fontsize=24)
+        #ax.set_title('Confusion Matrix',fontsize=24)
         fig.savefig(save_fig_path)
 
 def make_PRC(labels,preds,save_fig_path,n_class):
@@ -499,7 +499,7 @@ def make_PRC(labels,preds,save_fig_path,n_class):
         labels_cpy = labels_cpy[:,i]
 
         precisions, recalls, thresholds = precision_recall_curve(labels_cpy, preds_cpy)
-        print(thresholds)
+        #print(thresholds)
         precisions = np.insert(precisions,0,0)
         precisions = np.append(precisions,1)
         recalls = np.insert(recalls,0,1)
